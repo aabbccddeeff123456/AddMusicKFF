@@ -17,7 +17,11 @@ endif
 
 
 if !UsingSA1
-	sa1rom
+	if read1($00FFD7) == $0D
+		fullsa1rom
+	else
+		sa1rom
+	endif
 	!SA1Addr1 = $3000
 	!SA1Addr2 = $6000
 	!Bank     = $000000
@@ -100,7 +104,7 @@ endif
 !MusicBackup = $0DDA|!SA1Addr2
 
 
-!DefARAMRet = $042F	; This is the address that the SPC will jump to after uploading a block of data normally.
+!DefARAMRet = $042E	; This is the address that the SPC will jump to after uploading a block of data normally.
 !ExpARAMRet = $0400	; This is the address that the SPC will jump to after uploading a block of data that precedes another block of data (used when uploading multiple blocks).
 			; All of these are changed automatically.
 !SongCount = $00	; How many songs exist.  Used by the fading routine; changed automatically.
@@ -350,7 +354,7 @@ endif
 	LDA !MusicMir
 	CMP #!SongCount
 	BCC +
-	LDA #$FF
+	ORA #$80
 	JMP Fade
 +
 ;	REP #$30
@@ -675,8 +679,8 @@ endif
 if !Starman != $00
 	LDA $1490|!SA1Addr2
 	CMP #$1E
-	BCS .starMusic
 	BEQ .restoreFromStarMusic
+	BCS .starMusic
 endif
 ++
 	RTS
