@@ -32,15 +32,15 @@ dw $0000 ;cmdF7
 dw cmdF8
 dw cmdF9
 dw cmdFA
-dw cmdFB
+%dwIfDefFalse(!noVcmdFB, cmdFB)
 dw cmdFC
 dw cmdFD
 dw cmdFE
-;dw cmdFF
+dw cmdFF
 
 CommandLengthTable:
 db           $02, $02, $03, $04, $04, $01 ; DA-DF
 db $02, $03, $02, $03, $02, $03, $02, $02 ; E0-E7
 db $03, $04, $02, $04, $04, $03, $02, $04 ; E8-EF
 db $01, $04, $04, $03, $02, $09, $03, $04 ; F0-F7
-db $02, $03, $03, $03, $05, $01, $01, $00 ; F8-FF
+db $02, $03, $03, $03, $05, $01, $01, $02 ; F8-FF

@@ -5,6 +5,13 @@ arch spc700
 if !noSFX == !false
 TerminateIfSFXPlaying:
 	mov	a, $48
+	beq +
+	mov a,!AssociatedDSPChannel+x
+	bmi +
+	push y
+	mov y,a
+	mov a,ChannelBitTable+y
+	pop y
 	and	a, $1d
 	beq	+
 	;WARNING: Won't work if anything else is in the stack!
@@ -95,7 +102,7 @@ cmdDA:					; Change the instrument (also contains code relevant to $E5 and $F3).
 	mov	!BackupSRCN+x, a	; /
 	
 	mov	a, $48			; \ No noise is playing on this channel.
-	tclr	!MusicNoiseChannels, a	; / (EffectModifier is called later)
+	tclr	!MusicNoiseChannelsReal, a	; / (EffectModifier is called later)
 	
 	mov	a, y
 
@@ -137,13 +144,13 @@ ApplyInstrument:			; Call this to play the instrument in A whose data resides in
 
 	mov	y, #$00			; \ 
 	mov	a, ($14)+y		; / Get the first instrument byte (the sample)
-	bpl	+
 if !noSFX == !false
-	and	a, #$1f
-	mov	$0389, a
-endif
-	or	(!MusicNoiseChannels), ($48)
+	bpl	+
+	call	Noiz
 	bra	++
+else
+	bmi	++
+endif
 +
 	mov	($10)+y, a		; (save it in the backup table)
 ++
@@ -157,8 +164,27 @@ if !noSFX == !false
 	call	TerminateIfSFXPlaying	; If there's a sound effect playing, then don't change anything.
 endif
 	
+	
+	
+	
 	push	x			; \ 
-	mov	a, x			; |
+	;mov	a, x			; |
+	mov a,!AssociatedDSPChannel+x
+	bpl ++
+-
+	mov	y, #$00			; \ 
+	mov	a, ($14)+y		; / Get the first instrument byte (the sample)
+	bpl	+	; If the byte was positive, then it was a sample.  Just write it like normal.
+	call	cmdF8
++
+	mov y,#$04
+	bra +
+++
+	mov y,a
+	mov a,ChannelBitTable+y
+	and a,$1d
+	bne -
+	mov a,y
 	xcn	a			; | Make x contain the correct DSP register for this channel's voice.
 	lsr	a			; |
 	or	a, #$04			; |
@@ -176,12 +202,8 @@ endif
 	bra	.DSPWriteDirectionGate1
 
 .noiseInstrument
-if !noSFX == !false
-	cmp	!SFXNoiseChannels, #$00
-	bne	.DSPWriteDirectionGate1
-endif	
 	push	y
-	call	ModifyNoise
+	call	cmdF8
 	pop	y
 .DSPWriteDirectionGate1
 	bra	.incXY
@@ -236,11 +258,17 @@ GetBackupInstrTable:
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 cmdDB:					; Change the pan
 {
+	cmp !VolumeCalcMode,#$00
+	beq +
+	mov   !Pan+x, a
+	bra ++
++
 	and   a, #$1f
 	mov   !Pan+x, a         ; voice pan value
 	mov   a, y
 	and   a, #$c0
 	mov   !SurroundSound+x, a         ; negate voice vol bits
+++
 	mov   a, #$00
 	mov   $0280+x, a
 SetVolChangeFlag:
@@ -287,12 +315,17 @@ cmdDF:					; Vibrato off (vibrato on goes straight into this, so be wary.)
 	ret
 }
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+SubC_table2_manualVTable:
+	mov	!SecondVTable, a	; \ Argument is which table we're using
+SetAllVolChangeFlag:
+	mov	$5c, #$ff		; / Mark all channels as needing a volume refresh
+	ret				; /
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 cmdE0:					; Change the master volume
 {
 	mov   !MasterVolume, a
 	mov   $56, #$00
-	mov   $5c, #$ff          ; all vol chgd
-	ret
+	bra   SetAllVolChangeFlag          ; all vol chgd
 }
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 cmdE1:					; Fade the master volume
@@ -374,6 +407,10 @@ cmdE6:					; Second loop
 	ret				;
 
 label2:
+	mov   a,$30+x			; \
+	mov   $0180+x,a			; | Save the current song position into $0180
+	mov   a,$31+x			; |
+	mov   $0181+x,a			; /
 	mov   a, $01f0+x
 	dec   a
 	beq   label4
@@ -396,6 +433,20 @@ label4:
 {
 	; Handled elsewhere.
 }
+
+SubC_20:
+cmdE9RecallSingle:
+	mov   x, $46
+	mov   a, #$01
+
+cmdE9Recall:
+	mov   y, a
+	mov   a, $03f0+x
+	push  a
+	mov   a, $03f1+x
+	push  a
+	bra   cmdE9SetCounter
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 cmdE9:					; Loop
 {
@@ -403,7 +454,8 @@ cmdE9:					; Loop
 	call  GetCommandDataFast
 	push  a
 	call  GetCommandDataFast
-	mov   $c0+x, a           ; repeat counter = op3
+cmdE9SetCounter:
+	mov   $c0+x, y           ; repeat counter = op3
 	mov   a, $30+x
 	mov   $03e0+x, a
 	mov   a, $31+x
@@ -465,7 +517,21 @@ cmdEE:					; Set the tuning
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 cmdEF:					; Echo command 1 (channels, volume)
 {
-	mov	!MusicEchoChannels, a
+	mov	!MusicEchoChannelsReal, a
+	push x
+	mov a,$48
+	push a
+	mov $48,#$80
+	mov x,#$0e
+-
+	call	ReorderEcho
+	lsr $48
+	dec x
+	dec x
+	bpl -
+	pop a
+	mov $48,a
+	pop x
 	call	EffectModifier
 	call	GetCommandDataFast
 	mov	a, #$00
@@ -562,12 +628,42 @@ SubC_table:
 	dw	SubC_1
 	dw	SubC_2
 	dw	SubC_3
-	dw	$0000
+	dw	SubC_4
 	dw	SubC_5
 	dw	SubC_6
 	dw	SubC_7
 	dw	SubC_8
 	dw	SubC_9
+	dw	SubC_A
+	dw	SubC_B
+	dw	SubC_C
+	dw	SubC_D
+	dw	SubC_E
+	dw	SubC_F
+	dw	SubC_10
+	dw	SubC_11
+	dw	SubC_12
+	dw	SubC_13
+	dw	SubC_14
+	dw	SubC_15
+	dw	SubC_16
+	dw	SubC_17
+	dw	SubC_18
+	dw	SubC_19
+	dw	SubC_1A
+	dw	SubC_1B
+	dw	SubC_1C
+	dw	SubC_1D
+	dw	SubC_1E
+	dw	$0000
+	dw	SubC_20
+	dw	SubC_21
+	dw	SubC_22
+	dw	SubC_23
+	dw	$0000
+	dw	SubC_25
+	dw	SubC_26
+	dw	SubC_27
 
 SubC_0:
 	not1    $6e.5				; 
@@ -585,32 +681,200 @@ SubC_02:
 	tclr	$0160, a
 	ret
 
+SubC_D:
+	or	($6e), ($48)
+SubC_6:
+	eor	($6e), ($48)
+	bra	SubC_00
+
+SubC_C:
+	or	($6e), ($48)
+	bra	SubC_00
+
+SubC_5:
+	call	SubC_1B
+SubC_16:
+	not1	$0160.1
+	ret
+
+SubC_17:
+	call	SubC_1B
+SubC_19:
+	mov	a,#$02
+	bra	SubC_01
+
+SubC_18:
+	call	SubC_1B
+SubC_1A:
+	mov	a,#$02
+	bra	SubC_02
+
 SubC_1:
 	mov	a,$48
 	tclr	$0162, a
-	eor	a, $0161
-	mov	$0161,a
+	eor	a, $016e
+	mov	$016e,a
+--
+	mov x,$46
+	mov y,!AssociatedDSPChannel+x
+	bmi +
+	mov a,ChannelBitTable+y
+	tclr $0161,a
++
 	ret
+
+SubC_12:
+	mov	a, $48
+	tset	$016e,a
+	tclr	$0162,a
+	bra --
+
+SubC_13:
+	mov	a,$48
+	tclr	$016e,a
+	tset	$0162,a
+	bra --
 
 SubC_2:
 	eor	!WaitTime, #$03
 	ret
-	
-SubC_5:
-	mov    a, #$00
-	mov    $0167, a
-	mov    $0166, a
-	not1   $0160.1
+
+SubC_table2_SquareFormatClearSRCN:
+	mov	$0163, a
+	mov	a, #$F0 ;BEQ opcode
+	mov	SquareGate, a ;Special wave will now be initialized
+	mov	a, #$3F ;CALL opcode
+	mov	SubC_4Gate,a
+
+SubC_4:
+SubC_4Gate:
+	ret ;Will be turned into a call opcode
+	dw	Square_getSpecialWavePtr
+	movw	ya, $14
+	movw	$16, ya
+	clrc
+	adc	$16,#$09
+	adc	$17,#$00
+	mov	a,#$00
+	mov	y,#$08
+SubC_4l:
+	mov	($14)+y,a
+	mov	($16)+y,a
+	dbnz	y, SubC_4l
 	ret
-	
-SubC_6:
-	eor	($6e), ($48)
-	bra	SubC_00
 	
 SubC_8:
 	mov	!SecondVTable, #$01		; Toggle which velocity table we're using.
+	ret
+
+SubC_A:
+	mov	!SecondVTable, #$00		; Toggle which velocity table we're using.
+	ret
+
+SubC_14:
+	mov	!WaitTime, #$01
+	ret
+
+SubC_15:
+	mov	!WaitTime, #$02
+	ret
+
+SubC_1B:
+	mov    a, #$00
+	mov    $0167, a
+	mov    $0166, a
+	ret
+
+SubC_1C:
+SyncInc:
+	setp
+	inc.b	$0166&$FF		; Increase $166.
+	cmp	$0166&$FF, $016c&$FF
+	bne	SyncInc_ret
+	mov	$0166&$FF, #$00
+	inc.b	$0167&$FF
+	; Note that this is different from AMM's code.
+	; The old code never let the low byte go above #$C0.
+	; A good idea in theory, but it both assumes that all
+	; songs use 4/4 time, and it makes, for example,
+	; using the song's time as an index to a table more difficult.
+	; Thus, it is optional, and can be restored via the $FA $12 VCMD.
+	; By default, this is de facto treated as a word increment.
+
+SyncInc_ret:
+	clrp
+	ret
+
+SubC_21:
+	call	TerminateIfLoopBreakDisabled
+	;WARNING: This loop break is only compatible with the E9 VCMD!
+	mov	x, $46
+	mov	y, $c0+x
+	dbnz	y, +
+	ret
++
+	;No RET needed, thus we get rid of the return pointer.
+	pop	a
+	pop	y
+	jmp	L_0C60
+
+TerminateIfE6LoopCountNot1:
+	mov	x, $46
+	mov	a, $01f0+x
+	dec	a
+	beq	+
+	;WARNING: Won't work if anything else is in the stack!
+	pop	a	;Jump forward one pointer in the stack in order to
+	pop	a	;terminate the entire preceding routine.
++
+	ret
+
+SubC_23:
+	call	TerminateIfLoopBreakDisabled
+	;WARNING: This loop break is only compatible with the E6 VCMD!
+	call	TerminateIfE6LoopCountNot1
+	;Terminate the loop counter for the E9 VCMD.
+	mov	a, #$00
+	mov	$c0+x, a
+	bra	SubC_22_23_E6JumpToEnd
+
+SubC_22:
+	call	TerminateIfLoopBreakDisabled
+	;WARNING: This loop break is only compatible with the E6 VCMD!
+	call	TerminateIfE6LoopCountNot1
+SubC_22_23_E6JumpToEnd:
+	mov	a, $0180+x
+	mov	$30+x, a
+	mov	a, $0181+x
+	mov	$31+x, a
+	ret
+
+TerminateIfLoopBreakDisabled:
+	mov	a, $48
+	and	a, $038c
+	bne	+
+	;WARNING: Won't work if anything else is in the stack!
+	pop	a	;Jump forward one pointer in the stack in order to
+	pop	a	;terminate the entire preceding routine.
++
+	ret
+
+SubC_25:
+	mov	a, $48
+	eor	a, $038c
+	mov	$038c, a
+	ret
+
+SubC_26:
+	mov	a, $48
+	tset	$038c, a
+	ret
+
+SubC_27:
+	mov	a, $48
+	tclr	$038c, a
 cmdF5Ret:
-	ret	
+	ret
 }
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 cmdF5:					; FIR Filter command.
@@ -632,15 +896,15 @@ cmdF5:					; FIR Filter command.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 cmdF7:					; Originally the "write to ARAM command". Disabled by default.
 {
-;	push a
-;	call GetCommandDataFast
-;	mov $15, a
-;	call GetCommandDataFast
-;	mov $14, a
-;	pop a
-;	mov y, #$00
-;	mov ($14)+y, a
-;	ret
+	push a
+	call GetCommandDataFast
+	mov $15, a
+	call GetCommandDataFast
+	mov $14, a
+	pop a
+	mov y, #$00
+	mov ($14)+y, a
+	ret
 }
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;cmdF8:					; Noise command.
@@ -836,6 +1100,7 @@ HotPatchVCMDByte0StorageSet:
 	;Byte 0 Bit 0 Clear - Arpeggio plays during rests
 	;Byte 0 Bit 0 Set - Arpeggio doesn't play during rests
 HotPatchVCMDByte0Bit0Storages:
+if !noVcmdFB == !false
 	dw	HandleArpeggioInterrupt_restOpcodeGate
 	db	$B0 ;BCS opcode
 	db	$F0 ;BEQ opcode
@@ -843,6 +1108,7 @@ HotPatchVCMDByte0Bit0Storages:
 	dw	HandleArpeggio_restBranchGate+1
 	db	$00
 	db	HandleArpeggio_return2-HandleArpeggio_restBranchGate-2
+endif
 HotPatchVCMDByte0Bit0StoragesEOF:
 
 	;Byte 0 Bit 1 Clear - Write ADSR to DSP registers first during instrument setup
@@ -871,6 +1137,15 @@ HotPatchVCMDByte0Bit2Storages:
 	dw	L_10B2_zeroVCMDCheckGate+1
 	db	L_10B2_jmpToL_10D1-L_10B2_zeroVCMDCheckGate-2
 	db	L_10B2_subroutineCheck-L_10B2_zeroVCMDCheckGate-2
+
+	dw	L_10B2_skipLoopChecksF4Gate+1
+	db	L_10B2_skipLoopChecksF4-L_10B2_skipLoopChecksF4Gate-2
+	db	$00
+
+	dw	L_10B2_FACommandSubroutineGate
+	db	$2F ;BRA opcode
+	db	$D0 ;BNE opcode
+
 HotPatchVCMDByte0Bit2StoragesEOF:
 
 	;Byte 0 Bit 3 Clear - $DD VCMD does not account for per-channel transposition
@@ -902,9 +1177,11 @@ HotPatchVCMDByte0Bit5StoragesEOF:
 	;Byte 0 Bit 6 Clear - When using arpeggio, glissando disables itself after two base notes
 	;Byte 0 Bit 6 Set - When using arpeggio, glissando disables itself after one base note
 HotPatchVCMDByte0Bit6Storages:
+if !noVcmdFB == !false
 	dw	cmdFB_glissNoteCounter+1
 	db	$02
 	db	$01
+endif
 HotPatchVCMDByte0Bit6StoragesEOF:
 
 HotPatchVCMDByte1StorageSet:
@@ -1073,6 +1350,19 @@ SubC_table2:
 	dw	.reserveBuffer		; 04
 	dw	$0000 ;.gainRest	; 05
 	dw	.manualVTable		; 06
+	dw	.oldFA_com		; 07
+	dw	.VxDSPWrite		; 08
+	dw	.VxDSPWrite		; 09
+	dw	.VxDSPWrite		; 0A
+	dw	.VxDSPWrite		; 0B
+	dw	.VxDSPWrite		; 0C
+	dw	.VxDSPWrite		; 0D
+	dw	.VxDSPWrite		; 0E
+	dw	.VxDSPWrite		; 0F
+	dw	.SquareFormatClearSRCN	; 10
+	dw	$0000			; 11
+	dw	.SyncClockDivider	; 12
+	dw	cmdE9Recall		; 13
 	
 .HFDTune
 	mov     !HTuneValues+x, a
@@ -1084,14 +1374,40 @@ SubC_table2:
 	;mov	!RestGAINReplacement+x, a ; There is no memory location allocated for this at the moment.
 	;ret
 	
-.manualVTable
-	mov	!SecondVTable, a	; \ Argument is which table we're using
-	mov	$5c, #$ff		; | Mark all channels as needing a volume refresh
-	ret				; /
-	
+.oldFA_com
+	mov	$0165,a
+	ret
+
+.VxDSPWrite
+	;Y will contain our command ID shifted left once.
+	;Adjust by command ID to get the lower three bits of our voice DSP
+	;register ID. (The fourth is zeroed out.)
+	push	a
+	mov a,!AssociatedDSPChannel+x
+	bmi ++
+	mov $14,a
+	mov	a, y
++
+	setc
+	sbc	a, #$08<<1
+	xcn	a
+	or	a, $14
+	xcn	a
+	lsr	a
+	pop	y
+	movw	$f2, ya
+	ret
+++
+	pop a
+	ret
+
+.SyncClockDivider
+	mov	$016c, a
+	ret
 }
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;	
 cmdFB:					; Arpeggio command.
+if !noVcmdFB == !false
 {
 	bmi	.special		; \ Save the number of notes.
 	mov	!ArpNoteCount+x, a	; / (But if it's negative, then it's a special command).
@@ -1225,19 +1541,28 @@ HandleArpeggio:				; Routine that controls all things arpeggio-related.
 if !noSFX == !false
 	call	TerminateIfSFXPlaying
 endif
-	
-	mov	a, !PreviousNote+x	; \ Play this note.
-	cmp	a, #$c7			;  |(unless it's a rest)
-.restBranchGate				;  |
-	beq	+			;  |
-+					;  | Default state of this branch gate is open.
-	call	NoteVCMD		; /
+	mov	a, !PreviousNote+x		; \ Play this note.
+	cmp	a, #$c7				;  |(unless it's a rest)
+.restBranchGate					;  |
+	beq	+				;  |
++						;  | Default state of this branch gate is open.
+						;  | If runningArp was set outside of this routine, then
+	not1	NormalNote_runningArpGate.5 ;  | remote code event -2 should be able to fire.
+	call	NoteVCMD			;  |
+	setc					;  | Close the gate again.
+	mov1	NormalNote_runningArpGate.5, c ; /
 	
 	call	TerminateOnLegatoEnable ; \ Key on the current voice (with conditions).
-	or	($47), ($48)		; / Set this voice to be keyed on.
+	mov y,!AssociatedDSPChannel+x
+	bmi .return2
+	mov a,ChannelBitTable+y
+	or a,$47
+	mov $47,a
+	;or	($47), ($48)		; / Set this voice to be keyed on.
 .return2
 	ret
 }	
+endif
 	
 cmdFC:
 {
@@ -1245,9 +1570,9 @@ cmdFC:
 	call	GetCommandDataFast			; |
 	push	a					; /
 	call	GetCommandDataFast			; \
-	beq	ClearRemoteCodeAddressesPre		; | Handle types #$ff, #$04, and #$00. #$04 and #$00 take effect now; #$ff has special properties.
-	cmp	a, #$ff					; |
-	beq	.noteStartCommand			; |
+	beq	ClearRemoteCodeAddressesPre		; | Handle types #$fe-#$ff, #$04, and #$00. #$04 and #$00 take effect now; #$fe-#$ff has special properties.
+	cmp	a, #$fe					; |
+	bcs	.noteStartCommand			; |
 	cmp	a, #$04					; |
 	beq	.immediateCall				; |
 	cmp	a, #$06					; | Handle type $06, which is reserved for AMK beta gain conversions due to containing an auto-restore.
@@ -1351,6 +1676,156 @@ ClearKONRemoteCodeAddresses:
 	ret
 }
 
-cmdFF:
+cmdFF:	;custom command with variable length
+	mov $14,a
+	asl a
+	mov y,a
+	mov a,.cmdFFCustomCommandsTable+1+y
+	push a
+	mov a,.cmdFFCustomCommandsTable+y
+	push a
+	mov y,$14
+	mov a,.cmdFFCustomCommandsLengthTable+y
+	beq +
+	call GetCommandDataFast
++
+	ret
+
+.cmdFFCustomCommandsLengthTable
+	db $00,$01,$01,$01,$00,$00,$00,$01	;00-07
+	db $02,$00,$00,$00
+
+
+.cmdFFCustomCommandsTable
+	dw SetCPUControlledJumpAddress	;00
+	dw CPUControlledJumpIfEqual		;01
+	dw CPUControlledJumpIfGreaterOrEqualThan	;02
+	dw CPUControlledJumpIfLessOrEqualThan	;03
+	dw SetVolumeModeToNormalSMW	;04
+	dw SetVolumeModeToAkao	;05
+	dw SetVolumeModeToSuzuki	;06
+	dw SetSurroundSoundDirectly	;07
+	dw SetPanLFOParam	;08
+	dw TurnPanLFOOff	;09
+	dw AsyncLoopStart	;0a
+	dw AsyncLoopEnd	;0b
+
+AsyncLoopReturnAddress:
+	db $00,$00
+	db $00,$00
+	db $00,$00
+	db $00,$00
+	db $00,$00
+	db $00,$00
+	db $00,$00
+	db $00,$00
+
+AsyncLoopStart:
+	mov a,$30+x
+	mov AsyncLoopReturnAddress+x,a
+	mov a,$31+x
+	mov AsyncLoopReturnAddress+1+x,a
+	mov a,$0200+x
+	mov CPUControlledJumpAddressReturnDuration+1+x,a
+	ret
+
+AsyncLoopEnd:
+	mov a,AsyncLoopReturnAddress+x
+	mov $30+x,a
+	mov a,AsyncLoopReturnAddress+1+x
+	mov $31+x,a
+	mov a,CPUControlledJumpAddressReturnDuration+1+x
+	mov $0200+x,a
+	ret
+
+TurnPanLFOOff:
+	mov a,#$00
+	mov !PanLFORate+x,a
+	mov !PanLFODepth+x,a
+	bra +
+
+SetPanLFOParam:
+	mov !PanLFORate+x,a
+	call GetCommandDataFast
+	mov !PanLFODepth+x,a
+	mov a,#$00
++
+	mov !PanLFORateCalc+x,a
+	mov !PanLFOValueLo+x,a
+	mov !PanLFOValueHi+x,a
+	ret
+
+SetSurroundSoundDirectly:
+	mov !SurroundSound+x,a
+	or ($5c), ($48)
+	ret
+
+SetVolumeModeToNormalSMW:
+	clr0 !VolumeCalcMode
+	clr1 !VolumeCalcMode
+	bra +
+
+SetVolumeModeToAkao:
+	set0 !VolumeCalcMode
+	clr1 !VolumeCalcMode
+	bra +
+
+SetVolumeModeToSuzuki:
+	clr0 !VolumeCalcMode
+	set1 !VolumeCalcMode
++
+	mov $5c,#$ff
+	ret
+
+CPUControlledJumpIfLessOrEqualThan:
+	cmp a,$09	;$1dfa
+	bcc CPUControlledJumpGeneralExecute
+	ret
+CPUControlledJumpIfGreaterOrEqualThan:
+	cmp a,$09	;$1dfa
+	bcs CPUControlledJumpGeneralExecute
+	ret
+CPUControlledJumpIfEqual:
+	cmp a,$09	;$1dfa
+	beq +
+;loop if not equal
+CPUControlledJumpGeneralExecute:
+	mov a,CPUControlledJumpAddressReturnAddress+x
+	mov $30+x,a
+	mov a,CPUControlledJumpAddressReturnAddress+1+x
+	mov $31+x,a
+	mov a,CPUControlledJumpAddressReturnDuration+x
+	mov $0200+x,a
++
+	ret
+
+CPUControlledJumpAddressReturnAddress:
+	db $00,$00
+	db $00,$00
+	db $00,$00
+	db $00,$00
+	db $00,$00
+	db $00,$00
+	db $00,$00
+	db $00,$00
+CPUControlledJumpAddressReturnDuration:
+	db $00,$00
+	db $00,$00
+	db $00,$00
+	db $00,$00
+	db $00,$00
+	db $00,$00
+	db $00,$00
+	db $00,$00
+
+SetCPUControlledJumpAddress:
+	mov a,$30+x
+	mov CPUControlledJumpAddressReturnAddress+x,a
+	mov a,$31+x
+	mov CPUControlledJumpAddressReturnAddress+1+x,a
+	mov a,$0200+x
+	mov CPUControlledJumpAddressReturnDuration+x,a
+	ret
+
 ;ret
 
