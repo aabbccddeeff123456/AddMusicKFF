@@ -55,6 +55,7 @@ int main(int argc, char* argv[]) try		// // //
 
 	std::cout << "AddmusicK version " << AMKVERSION << "." << AMKMINOR << "." << AMKREVISION << " Alpha by Kipernal" << std::endl;
 	std::cout << "Parser version " << PARSER_VERSION << std::endl << std::endl;
+	std::cout << "AddmusicKFF Fork by KungFuFurby" << std::endl;
 	std::cout << "Protip: Be sure to read the readme! If there's an error or something doesn't\nseem right, it may have your answer!\n\n" << std::endl;
 
     if (asar_init() == false)
@@ -197,9 +198,18 @@ int main(int argc, char* argv[]) try		// // //
 			printError("Error: Your ROM is too small. Save a level in Lunar Magic or expand it with\nLunar Expand, then try again.", true);
 
 		if (rom[SNESToPC(0xFFD5)] == 0x23 && allowSA1)
+		{
 			usingSA1 = true;
+			if (rom[SNESToPC(0xFFD7)] == 0xD)
+				fullSA1 = true;
+			else
+				fullSA1 = false;
+		}
 		else
+		{
 			usingSA1 = false;
+			fullSA1 = false;
+		}
 
 
 		cleanROM();

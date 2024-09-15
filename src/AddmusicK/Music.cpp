@@ -63,6 +63,8 @@ static const int instrToSample[30] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x07, 0x08,
 static const int hexLengths[] = { 2, 2, 3, 4, 4, 1,
 2, 3, 2, 3, 2, 4, 2, 2, 3, 4, 2, 4, 4, 3, 2, 4,
 1, 4, 4, 3, 2, 9, 3, 4, 2, 3, 3, 2, 5, 1, 1 };
+static const int cmdffhexLengths[] = { 0,1,1,1,0,0,0,1,
+	2,0,0,0 };
 static int transposeMap[256];
 //static bool htranspose[256];
 static int hTranspose;
@@ -475,8 +477,18 @@ void Music::compile()
 		case 'c': case 'd': case 'e': case 'f': case 'g': case 'a': case 'b': case 'r': case '^':
 			parseNote();			break;
 		case ';':
-			parseComment();			break;		// Needed for comments in quotes
+			parseComment();			break;		// Needed for comments in quotes		
 		default:
+			if (targetAMKVersion == 3) {
+				if (tolower(text[pos]) == '%') {
+					error("Percussion note support from Codec's AMK Beta has not been implemented yet.");
+					break;
+				}
+				else if (tolower(text[pos]) == ':') {
+					parseLoopBreakCommand();
+					break;
+				}
+			}
 			if (isspace(text[pos]))
 			{
 				pos++; break;
@@ -1161,8 +1173,10 @@ void Music::parseLabelLoopCommand()
 
 		pos++;
 
-	updateQ[channel] = true;
-	updateQ[8] = true;
+	if (songTargetProgram == 0 && targetAMKVersion != 0) {
+		updateQ[channel] = true;
+		updateQ[8] = true;
+	}
 	prevNoteLength = -1;
 
 	if (text[pos] == '[')				// If this is a loop definition...
@@ -1200,9 +1214,12 @@ void Music::parseLabelLoopCommand()
 void Music::parseLoopCommand()
 {
 	pos++;
-	if (channel < 8)
-		updateQ[channel] = true;
-	updateQ[8] = true;
+	if (songTargetProgram == 0 && targetAMKVersion != 0) {
+		if (channel < 8) {
+			updateQ[channel] = true;
+		}
+		updateQ[8] = true;
+	}
 	prevNoteLength = -1;
 
 	if (text[pos] == '[')			// This is an $E6 loop.
@@ -1257,10 +1274,12 @@ void Music::parseLoopCommand()
 void Music::parseLoopEndCommand()
 {
 	pos++;
-	if (channel < 8)
-		updateQ[channel] = true;
-
-	updateQ[8] = true;
+	if (songTargetProgram == 0 && targetAMKVersion != 0) {
+		if (channel < 8) {
+			updateQ[channel] = true;
+		}
+		updateQ[8] = true;
+	}
 	prevNoteLength = -1;
 	if (text[pos] == ']')
 	{
@@ -1313,6 +1332,22 @@ void Music::parseLoopEndCommand()
 	inRemoteDefinition = false;
 	loopLabel = 0;
 }
+
+void Music::parseLoopBreakCommand()
+{
+	if (inE6Loop) {
+		error("Cannot use loop break command ':' within Superloops!!!");
+	}
+	else if (channel != 8) {
+		error("Cannot use loop break command ':' without being in a loop!!!");
+	}
+	else
+	{
+		append(0xF4);
+		append(0x21); //cmd $F4 $21 is responsible for breaking out of a loop
+	}
+}
+
 void Music::parseStarLoopCommand()
 {
 
@@ -1320,8 +1355,10 @@ void Music::parseStarLoopCommand()
 
 	if (channel == 8)  error("Nested loops are not allowed.")
 
+	if (songTargetProgram == 0 && targetAMKVersion != 0) {
 		updateQ[channel] = true;
-	updateQ[8] = true;
+		updateQ[8] = true;
+	}
 	prevNoteLength = -1;
 
 	i = getInt();
@@ -1717,9 +1754,22 @@ void Music::parseHexCommand()
 					error("Unknown hex command.");
 				}
 			}
-			else if (i > 0xFE)
+			else if (i > 0xFF)
 			{
 				error("Unknown hex command.");
+			}
+			else if (i == 0xFF)
+			{
+				skipSpaces;
+				if (text[pos] != '$')
+					error("Unknown hex command.")
+					pos++;
+				j = getHex();
+				
+				append(i);
+				append(j);
+				hexLeft = cmdffhexLengths[j];
+				return;
 			}
 			else if (i == 0xED && songTargetProgram == 1)
 			{
@@ -1788,8 +1838,11 @@ void Music::parseHexCommand()
 			
 			if (hexLeft == 1 && currentHex == 0xFA && songTargetProgram == 2)
 			{
+				//AddmusicM used $FA solely for the special pulse wave width command.
+				//This VCMD ID was overwritten by a collection of VCMDs, so we need to add a sub-VCMD ID.
 				hexLeft = 0;
-				error("This histortical AddmusicM hex command has not yet been implemented into AddmusicK.");
+				append(0x07);
+				append(i);
 			}
 			
 			if (hexLeft == 1 && currentHex == 0xFA)
@@ -2005,9 +2058,58 @@ void Music::parseHexCommand()
 				}
 			}
 
-			if (hexLeft == 0 && currentHex == 0xF4)
-			if (i == 0x00 || i == 0x06)
-				hasYoshiDrums = true;
+			if (hexLeft == 0 && currentHex == 0xF4) {
+				if (i == 0x00 || i == 0x06 || i == 0x0C)
+					hasYoshiDrums = true; // NOTE: VCMD 0x0D also deals with Yoshi Drums, but it always disables them, hence there is no reason to have this trigger the Yoshi Drum check.
+				//Convert VCMD IDs from Codec's AMK Beta
+				else if (i == 0x0a && targetAMKVersion == 3) {
+					data[channel].pop_back(); //We don't use a $F4 command slot here.
+					data[channel].pop_back(); //Instead, we use the $FD command.
+					append(0xFD);
+					return;
+				}
+				else if (i == 0x0b && targetAMKVersion == 3) {
+					data[channel].pop_back(); //We don't use a $F4 command slot here.
+					data[channel].pop_back(); //Instead, we use the $FE command.
+					append(0xFE);
+					return;
+				}
+				else if (i == 0x0c && targetAMKVersion == 3) {
+					data[channel].pop_back(); //We don't use a $F4 command slot at the moment.
+					data[channel].pop_back(); //Thus, replace $F4 $0C with the equivalent $FC remote code event.
+					append(0xFC);
+					append(0x00);
+					append(0x00);
+					append(0x00);
+					append(0x00);
+					return;
+				}
+				else if (i == 0x0d && targetAMKVersion == 3) {
+					data[channel].pop_back(); //We don't use a $F4 command slot at the moment.
+					data[channel].pop_back(); //Thus, replace $F4 $0D with the equivalent $FC remote code event.
+					append(0xFC);
+					append(0x00);
+					append(0x00);
+					append(0x07);
+					append(0x00);
+					return;
+				}
+				else if (i == 0x0e && targetAMKVersion == 3) {
+					data[channel].pop_back(); //We don't use a $F4 command slot at the moment.
+					data[channel].pop_back(); //Thus, replace $F4 $0E with the equivalent $FC remote code event.
+					append(0xFC);
+					append(0x00);
+					append(0x00);
+					append(0x08);
+					append(0x00);
+					return;
+				}
+				else if (i == 0x10 && targetAMKVersion == 3) {
+					//This VCMD ID was relocated.
+					append(0x21);
+					return;
+				}
+			}
 
 			if (hexLeft == 1 && currentHex == 0xDD)			// Hack allowing the $DD command to accept a note as a parameter.
 			{
@@ -2215,8 +2317,9 @@ void Music::parseNote()
 		int tempsize = j;	// If there's a pitch bend up ahead, we need to not optimize the last tie.
 		int temppos = pos;	//
 
-		if (j != 0 && (text[pos] == '^' || (i == 0xC7 && text[pos] == 'r')))
+		if (j != 0 && ((((songTargetProgram == 0 && targetAMKVersion != 0) || i == 0xC7) && text[pos] == '^') || (i == 0xC7 && text[pos] == 'r'))) {
 			pos++;
+		}
 
 		j += getNoteLength(getInt());
 		skipSpaces;
@@ -2232,7 +2335,7 @@ void Music::parseNote()
 		if (pos >= text.length())
 			break;
 
-	} while (text[pos] == '^' || (i == 0xC7 && text[pos] == 'r'));
+	} while ((((songTargetProgram == 0 && targetAMKVersion != 0) || i == 0xC7) && text[pos] == '^') || (i == 0xC7 && text[pos] == 'r'));
 
 	/*if (normalLoopInsideE6Loop)
 	tempLoopLength += j;
@@ -2393,6 +2496,12 @@ void Music::parseOptionDirective()
 		if (tempoRatio < 0)
 			error("#halvetempo has been used too many times...what are you even doing?")
 	}
+	else if (targetAMKVersion == 3 && strnicmp(text.c_str() + pos, "allsamplesimportant", 19) == 0 && isspace(text[pos + 19]))
+	{
+		pos += 19;
+		skipSpaces;
+		error("#option allsamplesimportant has not yet been implemented from Codec's AMK beta.");
+	}
 	else if (targetAMKVersion >= 4 && strnicmp(text.c_str() + pos, "amk109hotpatch", 14) == 0 && isspace(text[pos + 14]))
 	{
 		pos += 14;
@@ -2417,6 +2526,11 @@ void Music::parseSpecialDirective()
 		pos += 11;
 		parseInstrumentDefinitions();
 
+	}
+	else if (targetAMKVersion == 3 && strnicmp(text.c_str() + pos, "percussion", 10) == 0 && isspace(text[pos + 10]))
+	{
+		pos += 10;
+		error("Custom percussion has not yet been implemented from Codec's AMK beta.");
 	}
 	else if (strnicmp(text.c_str() + pos, "samples", 7) == 0 && isspace(text[pos + 7]))
 	{
@@ -2459,12 +2573,27 @@ void Music::parseSpecialDirective()
 		pos += 3;
 		parseSPCInfo();
 	}
+	else if (targetAMKVersion == 3 && strnicmp(text.c_str() + pos, "efficient", 9) == 0 && isspace(text[pos + 9]))
+	{
+		pos += 9;
+		error("#efficient (decreasing pitch accuracy in exchange for speed) has not yet been implemented from Codec's AMK beta.");
+	}
+	else if (targetAMKVersion == 3 && strnicmp(text.c_str() + pos, "semiefficient", 13) == 0 && isspace(text[pos + 13]))
+	{
+		pos += 13;
+		error("#semiefficient (decreasing vibrato accuracy in exchange for speed) has not yet been implemented from Codec's AMK beta.");
+	}
 	else if (strnicmp(text.c_str() + pos, "louder", 6) == 0 && isspace(text[pos + 6]))
 	{
 		if (targetAMKVersion > 1)
 			printWarning("#louder is redundant in #amk 2 and above.");
 		pos += 6;
 		parseLouderCommand();
+	}
+	else if (targetAMKVersion == 3 && strnicmp(text.c_str() + pos, "notranspose", 11) == 0 && isspace(text[pos + 11]))
+	{  //ADDED
+		pos += 11;
+		error("#notranspose has not yet been implemented from Codec's AMK beta.");
 	}
 	else if (strnicmp(text.c_str() + pos, "tempoimmunity", 13) == 0 && isspace(text[pos + 13]))
 	{
@@ -2989,6 +3118,20 @@ void Music::pointersFirstPass()
 	if (resizedChannel != -1)
 	{
 		int z = 0;
+		int specialWaveSampleIndex = ::getSample("SPECIALWAVE.brr", this);
+		if (specialWaveSampleIndex != -1) {
+			for (int a = 0; a < mySamples.size(); a++)
+			{
+				if (mySamples[a] == specialWaveSampleIndex)
+				{
+					data[resizedChannel].insert(data[resizedChannel].begin(), a);
+					data[resizedChannel].insert(data[resizedChannel].begin(), 0x10);
+					data[resizedChannel].insert(data[resizedChannel].begin(), 0xFA);
+					z += 3;
+					break;
+				}
+			}
+		}
 		if (targetAMKVersion > 1)
 		{
 			data[resizedChannel].insert(data[resizedChannel].begin(), 0x01);
