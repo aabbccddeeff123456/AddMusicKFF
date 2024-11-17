@@ -4212,21 +4212,9 @@ L_10F3:
 ;	dbnz	$10, L_10F3
 ;	bra	L_1111
 endif
-L_10FB:
-	call	L_1260					; \ 
-	call	GetCommandDataFast			; |
-	mov	$91+x, a				; | Get the $DD parameters.
-	call	GetCommandDataFast			; |
-	mov	$90+x, a				; |
-	call	GetCommandDataFast			; /
-	clrc
-	adc	a, $43
-cmdDDAddHTuneValuesGate:
-	bra	cmdDDAddHTuneValuesSkip
-	clrc
-	adc	a, !HTuneValues+x
-cmdDDAddHTuneValuesSkip:
-	call	CalcPortamentoDelta
+	call L_1260
+	call	GetCommandDataFast	
+	call cmdDD
 L_1111:
 	call	L_09CDWPreCheck
 L_1133:

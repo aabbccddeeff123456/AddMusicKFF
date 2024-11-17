@@ -294,9 +294,24 @@ SubC_table2_superVolume:
 	; Handled elsewhere.
 }
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;cmdDD:					; Pitch bend
+cmdDD:					; Pitch bend
 {
 	; Handled elsewhere.
+	;call	L_1260					; \ 
+				; |
+	mov	$91+x, a				; | Get the $DD parameters.
+	call	GetCommandDataFast			; |
+	mov	$90+x, a				; |
+	call	GetCommandDataFast			; /
+	clrc
+	adc	a, $43
+cmdDDAddHTuneValuesGate:
+	bra	cmdDDAddHTuneValuesSkip
+	clrc
+	adc	a, !HTuneValues+x
+cmdDDAddHTuneValuesSkip:
+	jmp	CalcPortamentoDelta
+	;jmp L_09CDWPreCheck
 }
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 cmdDE:					; Vibrato on
